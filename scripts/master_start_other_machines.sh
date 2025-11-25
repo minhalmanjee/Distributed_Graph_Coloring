@@ -15,9 +15,9 @@ IFS=',' read -r -a servers <<< "$servers_string"
 
 
 
-get_ip_normal(){ 
-    ip address | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.*.*.*' | grep -v '192.168.*.*' | grep -v '172.*.*.*'
-}
+#get_ip_normal(){ 
+#    ip address | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.*.*.*' | grep -v '192.168.*.*' | grep -v '172.*.*.*'
+#}
 
 
 echo "------------------------------------------------------------------"
@@ -150,7 +150,7 @@ copy_code_to_server_machines(){
         destination=$key
         
         role_list=${value#*@}
-        target_directory="fall_2024"
+        target_directory="fall_2025"
         echo "        target_directory = $target_directory"
         
 
@@ -197,37 +197,29 @@ start_servers() {
 
     server_node_id_counter=0
 
-
-    
     for key in "${!machine_server_map[@]}"
     do  
         echo "$key"
         destination=$key
-         # Extract username from the value
-         # Command to execute
         replicas=""
         for replica in ${replicas_map[$key]}; do
             replicas+="--replicaof $replica 6379 "
         done
         replicas="${replicas% }"  # Trim the trailing space
-        # echo $replicas
-        # echo "./fall_2024/KeyDB/src/keydb-server ./fall_2024/KeyDB/keydb.conf --multi-master yes --active-replica yes  $replicas;"
-         echo "STARTING SERVERS: in $destination"
-        # Run SSH command with a single block of shell commands
-        echo "$username@$destination ./fall_2024/KeyDB/src/keydb-server ./fall_2024/KeyDB/keydb.conf --multi-master yes --active-replica yes --logfile ./fall_2024/KeyDB/$key.log $replicas ;"
-        ssh -n "$username@$destination" "./fall_2024/KeyDB/src/keydb-server ./fall_2024/KeyDB/keydb.conf --multi-master yes --active-replica yes --logfile ./fall_2024/KeyDB/$key.log $replicas ;"
-        # ssh -n "$username@$destination" " ./fall_2024/KeyDB/src/keydb-server ./fall_2024/KeyDB/keydb.conf ; " 
+        echo $replicas
+        echo "STARTING SERVERS: in $destination"
         
-        # # Check if the SSH command was successful and print output
-        # if [ $? -eq 0 ]; then
-        #     echo "Server $destination responded with: $output"
-        # else
-        #     echo "Failed to start server on $destination."
-        # fi
+        # Start server in daemon mode
+        ssh -n "$username@$destination" "./fall_2025/KeyDB/src/keydb-server ./fall_2025/KeyDB/keydb.conf --multi-master yes --active-replica yes --logfile ./fall_2025/KeyDB/$key.log --daemonize yes $replicas"
+        
+        # Check if server started successfully
+        if [ $? -eq 0 ]; then
+            echo "Server $destination started successfully"
+        else
+            echo "Failed to start server on $destination."
+        fi
     done
-
-   
-}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
 
 close_servers() {
     generate_map
@@ -259,19 +251,23 @@ close_servers() {
         
         # Run SSH command with a single block of shell commands
         
-        ssh -n "$username@$destination" "pkill redis; pkill -9 keydb;" 
+        output=$(ssh -n "$username@$destination" "pkill redis; pkill -9 keydb;")
         # ssh -n "$username@$destination" " ./fall_2024/KeyDB/src/keydb-server ./fall_2024/KeyDB/keydb.conf ; " 
         
         # # Check if the SSH command was successful and print output
-        # if [ $? -eq 0 ]; then
-        #     echo "Server $destination responded with: $output"
-        # else
-        #     echo "Failed to start server on $destination."
-        # fi
+        if [ $? -eq 0 ]; then
+            echo "Server $destination responded with: $output"
+        else
+            echo "Failed to close server on $destination."
+        fi
     done
-
-   
 }   
+# Add this log function BEFORE store_graph_in_servers()
+log() {
+    local message="$1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$timestamp] $message" | tee -a "$LOGFILE"
+}
 
 store_graph_in_servers() {
     generate_map
@@ -281,17 +277,64 @@ store_graph_in_servers() {
     echo "-----------------------------------------------------------------------------------"
     echo
 
-    STARTING_SERVERS_START=$(date +%s)
+    STORING_GRAPH_IN_SERVERS_START=$(date +%s)
 
-    server_node_id_counter=0
-  
-   
-    # echo "./fall_2024/KeyDB/src/keydb-cli add_graph $path" 
-    # ssh -n "$username@yangra4" "./fall_2024/KeyDB/src/keydb-cli ping" /home/abhattar/Desktop/project_fall_sem/graph/edge_graph_youtube_connection_n1134890.txt
-#/home/abhattar/Desktop/project_fall_sem/graph/edge_graph_dblp_coauthorship_n317080.txt
-    ssh -n "$username@yangra4" "./fall_2024/KeyDB/src/keydb-cli add_graph /home/abhattar/fall_2024/graph/edge_graph_dblp_coauthorship_n317080.txt" 
+    # Load graph on ALL servers (not just first)
+    for destination in "${!machine_server_map[@]}"; do
+        echo "Loading graph on $destination..."
+        echo "Dataset file: $dataset"
+        
+        ssh -n "$username@$destination" "
+            cd ~/fall_2025 || exit 1
+            if [ ! -f \"graph/$dataset\" ]; then
+                echo \"ERROR: Graph file graph/$dataset not found\"
+                exit 1
+            fi
+            
+           
+            
+            # Load graph
+            {
+                while IFS=',' read -r n1 n2 || [ -n \"\$n1\" ]; do
+                    [ -z \"\$n1\" ] && continue
+                    n1=\$(echo \$n1 | tr -d '[:space:]')
+                    n2=\$(echo \$n2 | tr -d '[:space:]')
+                    [ -z \"\$n1\" ] || [ -z \"\$n2\" ] && continue
+                    echo \"SADD node_\${n1}_neighbours \${n2}\"
+                    echo \"SADD node_\${n2}_neighbours \${n1}\"
+                    echo \"SET node_\${n1}_color 0\"
+                    echo \"SET node_\${n2}_color 0\"
+                done < graph/$dataset
+            } | ./KeyDB/src/keydb-cli -h localhost --pipe > /dev/null 2>&1
+            
+            key_count=\$(./KeyDB/src/keydb-cli -h localhost DBSIZE 2>/dev/null | grep -o '[0-9]*')
+            echo \"Graph loaded on $destination: \$key_count keys\"
+        "
+    done
+
+    STORING_GRAPH_IN_SERVERS_END=$(date +%s)
+    STORING_GRAPH_IN_SERVERS_DURATION=$(( $STORING_GRAPH_IN_SERVERS_END - $STORING_GRAPH_IN_SERVERS_START ))
+    echo "Graph stored in servers in $STORING_GRAPH_IN_SERVERS_DURATION seconds"
 }
 
+# store_graph_in_servers() {
+#     generate_map
+#     echo
+#     echo "---------------------------------------------------------------------------------"
+#     echo "$(date) STORE GRAPH DATASET ON  SERVERS:"
+#     echo "-----------------------------------------------------------------------------------"
+#     echo
+
+#     STARTING_SERVERS_START=$(date +%s)
+
+#     server_node_id_counter=0
+  
+   
+#     # echo "./fall_2024/KeyDB/src/keydb-cli add_graph $path" 
+#     # ssh -n "$username@yangra4" "./fall_2024/KeyDB/src/keydb-cli ping" /home/abhattar/Desktop/project_fall_sem/graph/edge_graph_youtube_connection_n1134890.txt
+# #/home/abhattar/Desktop/project_fall_sem/graph/edge_graph_dblp_coauthorship_n317080.txt
+#     ssh -n "$username@lhotse4" "./fall_2025/KeyDB/src/keydb-cli add_graph /home/mmanjee/fall_2025/graph/simple_graph.txt" 
+# }
 
 copy_code_to_client_machines(){
 
@@ -309,16 +352,16 @@ copy_code_to_client_machines(){
     echo
     echo
     echo "compressing code"
-    cd ../../$base_target_directory
+    cd "$(dirname "${BASH_SOURCE[0]}")/.."
     echo
     echo "  compressing $base_target_directory"
     
     subdirlist="$(ls --ignore=results* --ignore=config_repository --ignore=config_data_repository --ignore=all_config_data_repository --ignore=graph_dataset --ignore=*.tar.xz --ignore=*.tar.gz .)"
     echo "  subdirlist:"
-    # for sd in $subdirlist
-    # do
-    #     echo "      $sd"
-    # done
+    for sd in $subdirlist
+    do
+        echo "      $sd"
+    done
     sd="color"
     echo
     echo "  + removing tar file $compileTarFilename"
@@ -389,17 +432,19 @@ delete_logs(){
         destination=$key
         
         role_list=${value#*@}
-        target_directory="fall_2024"
+        target_directory="fall_2025"
         echo "Deleting Logs on $key"
-        
-
-        ssh $username@$destination "cd /home/abhattar/fall_2024/KeyDB; rm $key.log"
 
 
-        local_time_start=$(date +%s)
+        ssh $username@$destination "cd ~/fall_2025/KeyDB; rm $key.log"
 
 
-       
+
+        if [ $? -eq 0 ]; then
+            echo "Logs deleted on $destination."
+        else
+            echo "Failed to delete logs on $destination."
+        fi
     done
 
 }
@@ -414,8 +459,8 @@ copy_logs() {
     echo "-----------------------------------------------------------------------------------"
     echo
 
-    target_directory="/home/abhattar/fall_2024/KeyDB"
-    local_save_directory="/home/abhattar/Desktop/project_fall_sem/monitor"
+    target_directory="~/fall_2025/KeyDB"
+    local_save_directory="/home/mmanjee/final/monitor"
 
     mkdir -p "$local_save_directory"  # Ensure local directory exists
 
@@ -440,7 +485,6 @@ copy_logs() {
 }
 
 
-
 delete_database(){
     generate_map
     echo "--------------------------------------------------------------------------"
@@ -453,17 +497,29 @@ delete_database(){
         
         echo "Deleting RDB files on $key"
         
-        ssh $username@$destination "rm -f *.rdb"
-        
+        # Delete RDB files from common locations
+        ssh $username@$destination "
+            # Delete from KeyDB directory
+            rm -f ~/fall_2025/KeyDB/*.rdb 2>/dev/null
+            # Delete from current directory (if KeyDB was run from there)
+            rm -f ~/*.rdb 2>/dev/null
+            # Also clear in-memory database if server is running (optional)
+            ~/fall_2025/KeyDB/src/keydb-cli -h localhost FLUSHALL 2>/dev/null || true
+            echo 'RDB files deleted on $key'
+        "
     done
 }
-# copy_code_to_server_machines
-close_servers
-delete_database
-delete_logs
+
+
+
+close_servers #stop old servers
+delete_database #delete old database
+delete_logs #delete old logs
+
+#copy_code_to_server_machines
 copy_code_to_client_machines
 
 start_servers
-sleep 10
+sleep 2
 store_graph_in_servers
-sleep 40
+sleep 5

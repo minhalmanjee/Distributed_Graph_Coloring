@@ -1,8 +1,0 @@
-#!/bin/sh
-#
-# Show the INFO from "keydb-cli"
-
-set -eu
-
-keydb-cli INFO
-keydb-cli LOLWUT

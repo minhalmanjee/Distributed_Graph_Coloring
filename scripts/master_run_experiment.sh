@@ -56,13 +56,6 @@ get_partition(){
 
 get_partition
 
-
-
-# bash master_start_other_machines.sh "${username}" "${dataset}" "${servers_string}" "${clients_string}"  
-
-
-
-
 IFS=',' read -r -a clients <<< "$clients_string"
 IFS=',' read -r -a servers <<< "$servers_string"
 
@@ -101,7 +94,7 @@ test_ssh(){
             ssh "${machine_server_map[$key]}" "ss -tuln | grep ':6379'"
         done
 
-        echo "Attempting to SSH into each server and checking if redis is running on port 6379..."
+        echo "Attempting to SSH into each client and checking if redis is running on port 6379..."
         for key in "${!machine_client_map[@]}"; do
             echo "Connecting to ${machine_client_map[$key]}..."
             ssh "${machine_client_map[$key]}" "cd fall_2024; ls -la"

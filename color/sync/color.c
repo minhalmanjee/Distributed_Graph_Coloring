@@ -173,6 +173,7 @@ redisReply *write_with_wait(redisContext *c, char *required_replicas, char *time
     log_write_start();
 
     fprintf(stdout, "\n Command %s with key  %s and value %s \n", command_name, key, value);
+    fflush(stdout);
       
     do {
         // Send the write command
@@ -181,26 +182,64 @@ redisReply *write_with_wait(redisContext *c, char *required_replicas, char *time
             fprintf(stderr, "Failed to execute command: %s\n", c->errstr);
             return NULL;
         }
+        
+        // Check if SET command succeeded
+        if (reply->type == REDIS_REPLY_ERROR) {
+            fprintf(stderr, "Command failed: %s\n", reply->str);
+            freeReplyObject(reply);
+            return NULL;
+        }
+        
+        // Check if SET returned OK
+        if (reply->type == REDIS_REPLY_STATUS && strcmp(reply->str, "OK") != 0) {
+            fprintf(stderr, "SET command returned unexpected status: %s\n", reply->str);
+            freeReplyObject(reply);
+            return NULL;
+        }
+        
         freeReplyObject(reply);
+
+        // FIX: If required replicas is 0, skip WAIT (no replication needed)
+        if (required == 0) {
+            acknowledged_replicas = 0;
+            break; // Exit loop immediately - SET succeeded, no need to wait
+        }
 
         // Wait for replicas using WAIT command
         reply = redisCommand(c, "WAIT %s %s", required_replicas, timeout_ms);
         
         if (!reply) {
             fprintf(stderr, "WAIT command failed: %s\n", c->errstr);
-            return NULL;
+            // If WAIT fails but SET succeeded, we can still proceed
+            acknowledged_replicas = 0;
+            break;
+        }
+        
+        if (reply->type == REDIS_REPLY_ERROR) {
+            fprintf(stderr, "WAIT command error: %s\n", reply->str);
+            freeReplyObject(reply);
+            // If WAIT fails but SET succeeded, proceed anyway
+            acknowledged_replicas = 0;
+            break;
         }
 
         acknowledged_replicas = reply->integer;
         fprintf(stdout, "\nRequired Replicas: %d, Acknowledged Replicas: %d", required, acknowledged_replicas);
+        fflush(stdout);
         
         freeReplyObject(reply);
 
     } while (acknowledged_replicas < required);
+    
     log_write_end();
-    return NULL;  // Avoid returning freed memory
+    
+    // Return a dummy success reply instead of NULL
+    redisReply *success_reply = (redisReply *)malloc(sizeof(redisReply));
+    success_reply->type = REDIS_REPLY_STATUS;
+    success_reply->str = strdup("OK");
+    success_reply->len = 2;
+    return success_reply;
 }
-
 
 void print_locks_array(ClientGraphPetersonLock *locks_array, int num_neighbors) {
     for (int i = 0; i < num_neighbors; i++) {
@@ -214,56 +253,70 @@ void print_locks_array(ClientGraphPetersonLock *locks_array, int num_neighbors) 
 void acquire_lock(redisContext *context, ClientGraphPetersonLock *lock,const char *log_file_path,char *num_of_replicas,char *timeout) {
     redisReply *my_flag, *turn_var, *other_flag, *turn_var_new;
 
-        // FILE *log_file = fopen(log_file_path, "a");
-        // if (log_file == NULL) {
-        //     fprintf(stderr, "Error: Failed to open log file for writing: %s\n", log_file_path);
-        //     return;
-        // }
-        my_flag = write_with_wait(context, num_of_replicas, timeout, "SET", lock->lock_key_1, "1");
-        
-        // fprintf(log_file, "setting own flag %s as %s was %s ",lock->lock_key_1, "1", my_flag->str);
-        
-        
-        turn_var= write_with_wait(context, num_of_replicas, timeout, "SET" , lock->turn_key ,lock->node_name ); 
-        // turn_var= redisCommand(context, "SET %s %s ",lock->turn_key, lock->node_name); 
-        // fprintf(log_file, "setting turn_var %s as %s ",lock->turn_key, lock->node_name);
-      
+    // Set the first flag
+    my_flag = write_with_wait(context, num_of_replicas, timeout, "SET", lock->lock_key_1, "1");
+    if (!my_flag) {
+        fprintf(stderr, "ERROR: Failed to set lock_key_1: %s\n", lock->lock_key_1);
+        return; // Exit if write failed
+    }
+    freeReplyObject(my_flag);
+    
+    // Set the turn variable
+    turn_var = write_with_wait(context, num_of_replicas, timeout, "SET", lock->turn_key, lock->node_name);
+    if (!turn_var) {
+        fprintf(stderr, "ERROR: Failed to set turn_key: %s\n", lock->turn_key);
+        return;
+    }
+    freeReplyObject(turn_var);
 
-        other_flag= redisCommand(context, "GET %s", lock->lock_key_2);
-        log_read();
+    // Get the other flag and turn variable
+    other_flag = redisCommand(context, "GET %s", lock->lock_key_2);
+    if (!other_flag) {
+        fprintf(stderr, "ERROR: Failed to GET lock_key_2: %s\n", lock->lock_key_2);
+        return;
+    }
+    log_read();
+    
+    turn_var_new = redisCommand(context, "GET %s", lock->turn_key);
+    if (!turn_var_new) {
+        fprintf(stderr, "ERROR: Failed to GET turn_key: %s\n", lock->turn_key);
+        freeReplyObject(other_flag);
+        return;
+    }
+    log_read();
+
+    // FIX: Add NULL checks before accessing ->str
+    while (other_flag != NULL && other_flag->type != REDIS_REPLY_NIL && other_flag->str != NULL &&
+           turn_var_new != NULL && turn_var_new->type != REDIS_REPLY_NIL && turn_var_new->str != NULL &&
+           strcmp(other_flag->str, "1") == 0 &&
+           strcmp(turn_var_new->str, lock->node_name) == 0) {
+
+        // Free old replies before getting new ones
+        freeReplyObject(turn_var_new);
+        freeReplyObject(other_flag);
+        
         turn_var_new = redisCommand(context, "GET %s", lock->turn_key);
         log_read();
-
-        // printf("Values of old turn value is %s and new turn val is %s",lock->node_name, turn_var_new->str );
-        // fprintf(log_file, "acquiring_locks %s",lock->node_name);
+        other_flag = redisCommand(context, "GET %s", lock->lock_key_2);
+        log_read();
         
-        // if(other_flag->str == NULL){
+        // Check if new replies are NULL or errors
+        if (!turn_var_new || !other_flag) {
+            fprintf(stderr, "ERROR: GET commands failed in busy-wait loop\n");
+            break;
+        }
+        
+        // If either key doesn't exist (NIL), break the loop
+        if (other_flag->type == REDIS_REPLY_NIL || turn_var_new->type == REDIS_REPLY_NIL) {
+            break;
+        }
+    }
 
-        //     printf("%s doesn't exist",lock->lock_key_2);
-        // }
-        // else
-        // {
-        //     printf("%s is set as %s", lock->lock_key_2, other_flag->str);
-        // }
-        while (other_flag->str != NULL &&
-                   strcmp(other_flag->str, "1") == 0 &&
-                   strcmp(turn_var_new->str, lock->node_name) == 0){
-
-                turn_var_new = redisCommand(context, "GET %s", lock->turn_key);
-                log_read();
-                other_flag= redisCommand(context, "GET %s", lock->lock_key_2);
-                log_read();
-
-               
-                // fprintf(log_file, "Waiting for Lock turn_var_new =%s and other_var_new %s",lock->turn_key , lock->lock_key_2);
-                   }
-
-        // sleep(1);
-        freeReplyObject(other_flag);
-        freeReplyObject(turn_var_new);
-        freeReplyObject(my_flag);
-
+    // Clean up
+    if (other_flag) freeReplyObject(other_flag);
+    if (turn_var_new) freeReplyObject(turn_var_new);
 }
+
 void release_lock(redisContext *context, ClientGraphPetersonLock *lock,char *num_of_replicas, char *timeout) {
     redisReply *reply;
 
@@ -395,7 +448,6 @@ int check_boundary_node(redisContext *context, const char *node_name, int last_n
     return 0;
 }
 
-
 void set_node_color(redisContext *context, const char *node_name, int color, const char *log_file_path, char *num_of_replicas, char *timeout) {
     char key[256];
     snprintf(key, sizeof(key), "%s_color", node_name);
@@ -404,42 +456,88 @@ void set_node_color(redisContext *context, const char *node_name, int color, con
     char color_str[10];
     snprintf(color_str, sizeof(color_str), "%d", color);
     
-
     char status[256];
     snprintf(status, sizeof(status), "%s_status", node_name);
 
-    // Open the log file in append mode
-    // FILE *log_file = fopen(log_file_path, "a");
-    // if (log_file == NULL) {
-    //     fprintf(stderr, "Error: Failed to open log file for asdfasdfasdf writing: %s\n", log_file_path);
-    //     return;
-    // }
-
-    // // Log node name and color to the log file
-    // fprintf(log_file, "Setting color for node: %s, Color: %d\n", node_name, color);
-
-    // Set the color in Redis
-    // redisReply *reply = redisCommand(context, "SET %s %s", key, color_str);
     redisReply *reply = write_with_wait(context, num_of_replicas, timeout , "SET" , key, color_str);
     redisReply *status_reply = write_with_wait(context, num_of_replicas, timeout , "SET" , status, "1");
+    
     if (reply == NULL || reply->type == REDIS_REPLY_ERROR) {
-        // fprintf(stderr, "Error: Failed to set color for node %s.\n", node_name);
-        // // Log the error to the log file
-        // fprintf(log_file, "Error: Failed to set color for node: %s\n", node_name);
         if (reply != NULL) {
-            freeReplyObject(reply);
+            // Manually free custom allocated reply
+            if (reply->str) free(reply->str);
+            free(reply);
         }
-        // fclose(log_file); // Close the log file
-        return; // Exit the function
+        if (status_reply != NULL) {
+            if (status_reply->str) free(status_reply->str);
+            free(status_reply);
+        }
+        return;
     }
 
-    // Log success to the log file
-    // fprintf(log_file, "Successfully set color for node: %s, Color: %d\n", node_name, color);
     fprintf(stdout, "Colored Node %s as %s.\n", node_name, color_str);
 
-    freeReplyObject(reply);
-    // fclose(log_file); // Close the log file
+    // Manually free custom allocated replies
+    if (reply != NULL) {
+        if (reply->str) free(reply->str);
+        free(reply);
+    }
+    if (status_reply != NULL) {
+        if (status_reply->str) free(status_reply->str);
+        free(status_reply);
+    }
 }
+
+// void set_node_color(redisContext *context, const char *node_name, int color, const char *log_file_path, char *num_of_replicas, char *timeout) {
+//     char key[256];
+//     snprintf(key, sizeof(key), "%s_color", node_name);
+    
+//     // Convert the integer color to string
+//     char color_str[10];
+//     snprintf(color_str, sizeof(color_str), "%d", color);
+    
+
+//     char status[256];
+//     snprintf(status, sizeof(status), "%s_status", node_name);
+
+//     // Open the log file in append mode
+//     // FILE *log_file = fopen(log_file_path, "a");
+//     // if (log_file == NULL) {
+//     //     fprintf(stderr, "Error: Failed to open log file for asdfasdfasdf writing: %s\n", log_file_path);
+//     //     return;
+//     // }
+
+//     // // Log node name and color to the log file
+//     // fprintf(log_file, "Setting color for node: %s, Color: %d\n", node_name, color);
+
+//     // Set the color in Redis
+//     // redisReply *reply = redisCommand(context, "SET %s %s", key, color_str);
+//     redisReply *reply = write_with_wait(context, num_of_replicas, timeout , "SET" , key, color_str);
+//     redisReply *status_reply = write_with_wait(context, num_of_replicas, timeout , "SET" , status, "1");
+//     if (reply == NULL || reply->type == REDIS_REPLY_ERROR) {
+//         // fprintf(stderr, "Error: Failed to set color for node %s.\n", node_name);
+//         // // Log the error to the log file
+//         // fprintf(log_file, "Error: Failed to set color for node: %s\n", node_name);
+//         if (reply != NULL) {
+//             freeReplyObject(reply);
+//         }
+//         // fclose(log_file); // Close the log file
+//         return; // Exit the function
+//     }
+
+//     // Log success to the log file
+//     // fprintf(log_file, "Successfully set color for node: %s, Color: %d\n", node_name, color);
+//     fprintf(stdout, "Colored Node %s as %s.\n", node_name, color_str);
+
+//     if (reply != NULL) {
+//         freeReplyObject(reply);
+//     }
+//     if (status_reply != NULL) {
+//         freeReplyObject(status_reply);
+//     }
+//     freeReplyObject(reply);
+//     // fclose(log_file); // Close the log file
+// }
 
 
 int get_node_id(const char *node_name) {
@@ -823,7 +921,7 @@ int main(int argc, char *argv[]) {
     // Free the keys array and Redis context
     free(keys);
     redisFree(context);
-    redisContext *monitor_context = redisConnect("lhotse102", 6379);
+    redisContext *monitor_context = redisConnect("yangra101", 6379);
     set_status_to_monitor(monitor_context,hostname);
     return 0;
 }

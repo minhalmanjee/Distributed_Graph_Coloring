@@ -45,10 +45,10 @@ generate_map(){
 
 
 
-# echo "Partitions:"
-# for partition in "${partitions[@]}"; do
-#     echo "${partition/,/ }"
-# done
+echo "Partitions:"
+for partition in "${partitions[@]}"; do
+    echo "${partition/,/ }"
+done
 
 
 
@@ -95,46 +95,46 @@ pair_clients_to_servers() {
 # }
 
 
-run_code_1_many() {
-    echo "---------------------------------------------------------------------------------------------------"
-    echo "                $(date)  Executing Code in Clients                                                        "
-    echo "---------------------------------------------------------------------------------------------------"
-    generate_map
+# run_code_1_many() {
+#     echo "---------------------------------------------------------------------------------------------------"
+#     echo "                $(date)  Executing Code in Clients                                                        "
+#     echo "---------------------------------------------------------------------------------------------------"
+#     generate_map
     
-    local index=0
-    declare -A server_client_map
-    local server_index=0
-    local num_servers=${#servers[@]}
+#     local index=0
+#     declare -A server_client_map
+#     local server_index=0
+#     local num_servers=${#servers[@]}
     
-    # Map clients to servers
-    for client in "${clients[@]}"; do
-        local assigned_server="${servers[$server_index]}"
-        server_client_map["$client"]="$assigned_server"
+#     # Map clients to servers
+#     for client in "${clients[@]}"; do
+#         local assigned_server="${servers[$server_index]}"
+#         server_client_map["$client"]="$assigned_server"
 
-        # Move to the next server in a round-robin fashion
-        server_index=$(( (server_index + 1) % num_servers ))
-    done
+#         # Move to the next server in a round-robin fashion
+#         server_index=$(( (server_index + 1) % num_servers ))
+#     done
 
-    # Execute the code on clients
-    for client in "${!machine_client_map[@]}"; do
-        partition="${partitions[index]}"
-        start=${partition%,*}  # Extract the first value (before comma)
-        end=${partition#*,}    # Extract the second value (after comma)
+#     # Execute the code on clients
+#     for client in "${!machine_client_map[@]}"; do
+#         partition="${partitions[index]}"
+#         start=${partition%,*}  # Extract the first value (before comma)
+#         end=${partition#*,}    # Extract the second value (after comma)
 
-        ip="${machine_server_map[${server_client_map[$client]}]#*@}"
+#         ip="${machine_server_map[${server_client_map[$client]}]#*@}"
 
-        echo
-        echo
-        echo
-        # echo "Connecting to ${machine_client_map[$client]} with partition range $start to $end..."
-        echo "${machine_client_map[$client]}" 
-        echo "cd /home/abhattar/code/color/sync; nohup ./color.sh $start $end $ip > color_${start}_${end}.log 2>&1 & echo \$! > color_${start}_${end}.pid"
-        ssh "${machine_client_map[$client]}" "cd /home/abhattar/code/color/1se; nohup ./color.sh $start $end $ip 19> color_${start}_${end}.log 2>&1 & echo \$! > color_${start}_${end}.pid"
-        # echo "cd /home/abhattar/code/color/1server; nohup ./color.sh $start $end $ip > color_${start}_${end}.log 2>&1 & echo \$! > color_${start}_${end}.pid"
-        ((index++))  # Move to the next partition
-        echo "$index"
-    done
-}
+#         echo
+#         echo
+#         echo
+#         echo "Connecting to ${machine_client_map[$client]} with partition range $start to $end..."
+#         echo "${machine_client_map[$client]}" 
+#         echo "cd /home/mmanjee/code/color/sync; nohup ./color.sh $start $end $ip > color_${start}_${end}.log 2>&1 & echo \$! > color_${start}_${end}.pid"
+#         ssh "${machine_client_map[$client]}" "cd /home/mmanjee/code/color/sync; nohup ./color.sh $start $end $ip 19> color_${start}_${end}.log 2>&1 & echo \$! > color_${start}_${end}.pid"
+#         # echo "cd /home/abhattar/code/color/1server; nohup ./color.sh $start $end $ip > color_${start}_${end}.log 2>&1 & echo \$! > color_${start}_${end}.pid"
+#         ((index++))  # Move to the next partition
+#         echo "$index"
+#     done
+# }
 
 
 
@@ -169,11 +169,11 @@ run_code_sync() {
         echo
         echo
         echo
-        # echo "Connecting to ${machine_client_map[$client]} with partition range $start to $end..."
+        echo "Connecting to ${machine_client_map[$client]} with partition range $start to $end..."
         echo "${machine_client_map[$client]}" 
-        echo "cd /home/abhattar/code/color/sync; nohup ./color.sh $start $end $ip > color_${start}_${end}.log 2>&1 & echo \$! > color_${start}_${end}.pid"
+        echo "cd /home/mmanjee/code/color/sync; nohup ./color.sh $start $end $ip > color_${start}_${end}.log 2>&1 & echo \$! > color_${start}_${end}.pid"
        
-        ssh "${machine_client_map[$client]}" "cd /home/abhattar/code/color/sync; nohup ./color.sh $start $end $ip 0 > color_${start}_${end}.log 2>&1 & echo \$! > color_${start}_${end}.pid"
+        ssh "${machine_client_map[$client]}" "cd /home/mmanjee/code/color/sync; nohup ./color.sh $start $end $ip 1 > color_${start}_${end}.log 2>&1 & echo \$! > color_${start}_${end}.pid"
         # echo "cd /home/abhattar/code/color/1server; nohup ./color.sh $start $end $ip > color_${start}_${end}.log 2>&1 & echo \$! > color_${start}_${end}.pid"
         ((index++))  # Move to the next partition
         echo "$index"
@@ -208,64 +208,63 @@ close_servers() {
             replicas+="--replicaof $replica 6379 "
         done
         replicas="${replicas% }"  # Trim the trailing space
-        # echo $replicas
-        # echo "./fall_2024/KeyDB/src/keydb-server ./fall_2024/KeyDB/keydb.conf --multi-master yes --active-replica yes  $replicas;"
+        echo $replicas
+        echo "./fall_2025/KeyDB/src/keydb-server ./fall_2025/KeyDB/keydb.conf --multi-master yes --active-replica yes  $replicas;"
         
         # Run SSH command with a single block of shell commands
         
-        ssh -n "$username@$destination" "pkill redis; pkill keydb;" 
-        # ssh -n "$username@$destination" " ./fall_2024/KeyDB/src/keydb-server ./fall_2024/KeyDB/keydb.conf ; " 
+        output=$(ssh -n "$username@$destination" "pkill redis; pkill keydb;")
         
-        # # Check if the SSH command was successful and print output
-        # if [ $? -eq 0 ]; then
-        #     echo "Server $destination responded with: $output"
-        # else
-        #     echo "Failed to start server on $destination."
-        # fi
+        # Check if the SSH command was successful and print output
+        if [ $? -eq 0 ]; then
+            echo "Server $destination responded with: $output"
+        else
+            echo "Failed to close server on $destination. Error: $?"
+        fi
     done
 
    
 } 
 
 
-run_keydbtester() {
-    echo "---------------------------------------------------------------------------------------------------"
-    echo "                  Executing Code in Clients                                                        "
-    echo "---------------------------------------------------------------------------------------------------"
-    generate_map
+# run_keydbtester() {
+#     echo "---------------------------------------------------------------------------------------------------"
+#     echo "                  Executing Code in Clients                                                        "
+#     echo "---------------------------------------------------------------------------------------------------"
+#     generate_map
     
-    local index=0
-    declare -A server_client_map
-    local server_index=0
-    local num_servers=${#servers[@]}
+#     local index=0
+#     declare -A server_client_map
+#     local server_index=0
+#     local num_servers=${#servers[@]}
     
 
-    # Execute the code on clients
-    for client in "${!machine_client_map[@]}"; do
-        partition="${partitions[index]}"
-        start=${partition%,*}  # Extract the first value (before comma)
-        end=${partition#*,}    # Extract the second value (after comma)
+#     # Execute the code on clients
+#     for client in "${!machine_client_map[@]}"; do
+#         partition="${partitions[index]}"
+#         start=${partition%,*}  # Extract the first value (before comma)
+#         end=${partition#*,}    # Extract the second value (after comma)
 
         
-        # echo "Connecting to ${machine_client_map[$client]} with partition range $start to $end..."
-        # echo "${machine_client_map[$client]}" "cd /home/abhattar/code/color;  ./client_tester.sh"
-        ssh "${machine_client_map[$client]}" "cd /home/abhattar/code/color;  ./client_tester.sh"
-        # echo "cd /home/abhattar/code/color/1server; nohup ./color.sh $start $end $ip > color_${start}_${end}.log 2>&1 & echo \$! > color_${start}_${end}.pid"
-        ((index++))  # Move to the next partition
-    done
-}
+#         # echo "Connecting to ${machine_client_map[$client]} with partition range $start to $end..."
+#         # echo "${machine_client_map[$client]}" "cd /home/abhattar/code/color;  ./client_tester.sh"
+#         ssh "${machine_client_map[$client]}" "cd /home/abhattar/code/color;  ./client_tester.sh"
+#         # echo "cd /home/abhattar/code/color/1server; nohup ./color.sh $start $end $ip > color_${start}_${end}.log 2>&1 & echo \$! > color_${start}_${end}.pid"
+#         ((index++))  # Move to the next partition
+#     done
+# }
 
 copy_client_logs() {
     generate_map
     display_map
     echo
     echo "---------------------------------------------------------------------------------"
-    echo "$(date) Copying Logs into main server"
+    echo "$(date) Copying Logs into main server of clients"
     echo "-----------------------------------------------------------------------------------"
     echo
 
-    target_directory="/home/abhattar/code/color/sync"
-    local_save_directory="/home/abhattar/Desktop/project_fall_sem/monitor/client_throughput"
+    target_directory="/home/mmanjee/code/color/sync"
+    local_save_directory="/home/mmanjee/final/monitor/client_throughput"
 
     mkdir -p "$local_save_directory"  # Ensure local directory exists
 
@@ -296,12 +295,12 @@ copy_logs() {
     display_map
     echo
     echo "---------------------------------------------------------------------------------"
-    echo "$(date) Copying Logs into main server"
+    echo "$(date) Copying Logs into main server of servers"
     echo "-----------------------------------------------------------------------------------"
     echo
 
-    target_directory="/home/abhattar/fall_2024/KeyDB"
-    local_save_directory="/home/abhattar/Desktop/project_fall_sem/monitor"
+    target_directory="/home/mmanjee/fall_2025/KeyDB"
+    local_save_directory="/home/mmanjee/final/monitor/server_throughput"
 
     mkdir -p "$local_save_directory"  # Ensure local directory exists
 
@@ -325,26 +324,25 @@ copy_logs() {
     done
 }
 
+pair_clients_to_servers
+run_code_sync
 
-# run_code
 # wait_for_completion
 # close_servers
 # delete_logs
-# pair_clients_to_servers
 # run_code_1_many
 # copy_logs
-run_code_sync
+# run_code_sync
 # sleep 30
 # close_servers
 # run_keydbtester
 
-EXPECTED_CLIENTS=20
+EXPECTED_CLIENTS=${#clients[@]}
 check_completion() {
 
-    ../KeyDB/src/keydb-cli flushall
     while true; do
         local COMPLETED
-        COMPLETED=$(../KeyDB/src/keydb-cli KEYS "*_status" | wc -l)
+        COMPLETED=$($HOME/final/KeyDB/src/keydb-cli -h yangra101 KEYS "*_status" | wc -l)
         echo "Clients completed: $COMPLETED / $EXPECTED_CLIENTS"
 
         if [[ "$COMPLETED" -eq "$EXPECTED_CLIENTS" ]]; then
