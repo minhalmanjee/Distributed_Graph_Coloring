@@ -139,6 +139,8 @@ pair_clients_to_servers() {
 
 
 run_code_sync() {
+    EXPERIMENT_START_TIME=$(date +%s)  # Add this line
+    
     echo "---------------------------------------------------------------------------------------------------"
     echo "                 $(date) Executing Code in Clients                                                        "
     echo "---------------------------------------------------------------------------------------------------"
@@ -173,7 +175,7 @@ run_code_sync() {
         echo "${machine_client_map[$client]}" 
         echo "cd /home/mmanjee/code/color/sync; nohup ./color.sh $start $end $ip > color_${start}_${end}.log 2>&1 & echo \$! > color_${start}_${end}.pid"
        
-        ssh "${machine_client_map[$client]}" "cd /home/mmanjee/code/color/sync; nohup ./color.sh $start $end $ip 1 > color_${start}_${end}.log 2>&1 & echo \$! > color_${start}_${end}.pid"
+        ssh "${machine_client_map[$client]}" "cd /home/mmanjee/code/color/sync; nohup ./color.sh $start $end $ip 0 > color_${start}_${end}.log 2>&1 & echo \$! > color_${start}_${end}.pid"
         # echo "cd /home/abhattar/code/color/1server; nohup ./color.sh $start $end $ip > color_${start}_${end}.log 2>&1 & echo \$! > color_${start}_${end}.pid"
         ((index++))  # Move to the next partition
         echo "$index"
@@ -277,15 +279,20 @@ copy_client_logs() {
 
         local_time_start=$(date +%s)  # Start time tracking
 
-        # Copying file from remote to local
-        # echo "$username@$destination:$target_directory/$file_to_copy.txt $local_save_directory/"
-        rsync -arzSH "$username@$destination:$target_directory/$file_to_copy.txt" "$local_save_directory/"
+        # Copy throughput log
+        rsync -arzSH "$username@$destination:$target_directory/$file_to_copy.txt" "$local_save_directory/" 2>/dev/null
+        
+        # Copy execution time log
+        rsync -arzSH "$username@$destination:$target_directory/$key.log" "$local_save_directory/" 2>/dev/null
 
         local_time_end=$(date +%s)  # End time tracking
         local_time_duration=$(( local_time_end - local_time_start ))
 
         echo "        ... done in $local_time_duration seconds"
         echo
+        
+        # Clean up old nohup logs after copying (optional)
+        ssh -n "$username@$destination" "cd $target_directory && rm -f color_*.log color_*.pid" 2>/dev/null
     done
 }
 
@@ -324,6 +331,62 @@ copy_logs() {
     done
 }
 
+log_server_throughput() {
+    generate_map
+    display_map
+    echo
+    echo "---------------------------------------------------------------------------------"
+    echo "$(date) Logging Server Request Throughput Statistics"
+    echo "-----------------------------------------------------------------------------------"
+    echo
+
+    local_save_directory="/home/mmanjee/final/monitor/server_throughput"
+    mkdir -p "$local_save_directory"  # Ensure local directory exists
+
+    timestamp=$(date '+%Y%m%d_%H%M%S')
+
+    for key in "${!machine_server_map[@]}"
+    do
+        server_ssh="${machine_server_map[$key]}"
+        output_file="${local_save_directory}/${key}_throughput_${timestamp}.log"
+        
+        echo "Fetching server throughput from $key..."
+
+        {
+            echo "=== Server Throughput: $key ==="
+            echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
+            if [ -n "$EXPERIMENT_START_TIME" ]; then
+                EXPERIMENT_END_TIME=$(date +%s)
+                EXPERIMENT_DURATION=$((EXPERIMENT_END_TIME - EXPERIMENT_START_TIME))
+                echo "Experiment start: $(date -d @$EXPERIMENT_START_TIME '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -r $EXPERIMENT_START_TIME '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo 'N/A')"
+                echo "Experiment elapsed time: $EXPERIMENT_DURATION seconds"
+            fi
+            echo ""
+            echo "=== Command Statistics ==="
+            ssh -n "$server_ssh" "cd ~/fall_2025 && ./KeyDB/src/keydb-cli -h localhost INFO commandstats" 2>/dev/null || echo "ERROR: Failed to connect to KeyDB"
+            echo ""
+            echo "=== Overall Stats ==="
+            ssh -n "$server_ssh" "cd ~/fall_2025 && ./KeyDB/src/keydb-cli -h localhost INFO stats | grep -E 'total_commands_processed|instantaneous_ops_per_sec|total_reads_processed|total_writes_processed|keyspace_hits|keyspace_misses|uptime_in_seconds'" 2>/dev/null || echo "ERROR: Failed to fetch stats"
+            echo ""
+            echo "=== Clients Connected ==="
+            ssh -n "$server_ssh" "cd ~/fall_2025 && ./KeyDB/src/keydb-cli -h localhost INFO clients | grep -E 'connected_clients|blocked_clients'" 2>/dev/null || echo "ERROR: Failed to fetch client info"
+            echo ""
+            echo "=== Client Connection Details ==="
+            echo "All connections:"
+            ssh -n "$server_ssh" "cd ~/fall_2025 && ./KeyDB/src/keydb-cli -h localhost CLIENT LIST" 2>/dev/null | head -20 || echo "ERROR: Failed to fetch client list"
+            echo ""
+            echo "Application clients only (excluding replication and localhost):"
+            ssh -n "$server_ssh" "cd ~/fall_2025 && ./KeyDB/src/keydb-cli -h localhost CLIENT LIST | grep -v 'flags=[MS]' | grep -v 'addr=127.0.0.1'" 2>/dev/null || echo "No application clients connected"
+        } > "$output_file"
+        
+        echo "        Server stats saved to: $output_file"
+        echo
+    done
+
+    echo "All server throughput logs saved to: $local_save_directory"
+    echo
+}
+
 pair_clients_to_servers
 run_code_sync
 
@@ -352,9 +415,10 @@ check_completion() {
 
         sleep 10 # Wait before checking again
     done
-    close_servers
+    #close_servers
     copy_client_logs
     copy_logs
+    log_server_throughput
     
 }
 

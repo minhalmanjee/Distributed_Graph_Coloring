@@ -105,6 +105,29 @@ echo "Attempting to SSH into each server..."
 # test_ssh
 
 
+sync_graph_main_server(){
+    generate_map
+    echo
+    echo "---------------------------------------------------------------------------------"
+    echo "$(date) COPYING UPDATED GRAPH TO MAIN SERVER:"
+    echo "-----------------------------------------------------------------------------------"
+    echo
+    for destination in "${!machine_server_map[@]}"; do
+        echo "Syncing graph to $destination..."
+        ssh $username@$destination "cd ~/fall_2025/graph; rm -rf *"
+        rsync -arzSH "../graph/$dataset" "$username@$destination:~/fall_2025/graph/$dataset"
+
+        if [ $? -eq 0 ]; then
+            echo "Graph synced to $destination."
+        else
+            echo "Failed to sync graph to $destination."
+        fi
+    done
+    echo ""
+
+   
+}
+
 
 copy_code_to_server_machines(){
 
@@ -171,7 +194,6 @@ copy_code_to_server_machines(){
         local_time_start=$(date +%s)
         echo "        uncompressing ..."
         ssh $username@$destination "cd $target_directory; tar -zxf $compileTarFilename; cd KeyDB; make all"
-
         local_time_end=$(date +%s)
         local_time_duration=$(( $local_time_end - $local_time_start ))
         echo "        ... done in $local_time_duration seconds"
@@ -196,7 +218,7 @@ start_servers() {
     STARTING_SERVERS_START=$(date +%s)
 
     server_node_id_counter=0
-
+    
     for key in "${!machine_server_map[@]}"
     do  
         echo "$key"
@@ -207,7 +229,7 @@ start_servers() {
         done
         replicas="${replicas% }"  # Trim the trailing space
         echo $replicas
-        echo "STARTING SERVERS: in $destination"
+         echo "STARTING SERVERS: in $destination"
         
         # Start server in daemon mode
         ssh -n "$username@$destination" "./fall_2025/KeyDB/src/keydb-server ./fall_2025/KeyDB/keydb.conf --multi-master yes --active-replica yes --logfile ./fall_2025/KeyDB/$key.log --daemonize yes $replicas"
@@ -219,7 +241,7 @@ start_servers() {
             echo "Failed to start server on $destination."
         fi
     done
-}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
+}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
 
 close_servers() {
     generate_map
@@ -267,7 +289,7 @@ log() {
     local message="$1"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo "[$timestamp] $message" | tee -a "$LOGFILE"
-}
+}   
 
 store_graph_in_servers() {
     generate_map
@@ -286,15 +308,24 @@ store_graph_in_servers() {
         
         ssh -n "$username@$destination" "
             cd ~/fall_2025 || exit 1
+            
+            # Verify KeyDB is ready
+            if ! ./KeyDB/src/keydb-cli -h localhost PING > /dev/null 2>&1; then
+                echo \"ERROR: KeyDB on $destination is not ready\"
+                exit 1
+            fi
+            
             if [ ! -f \"graph/$dataset\" ]; then
                 echo \"ERROR: Graph file graph/$dataset not found\"
                 exit 1
             fi
             
-           
+            # Get initial key count
+            initial_keys=\$(./KeyDB/src/keydb-cli -h localhost DBSIZE 2>/dev/null | grep -o '[0-9]*')
+            echo \"Initial keys on $destination: \$initial_keys\"
             
-            # Load graph
-            {
+            # Load graph and capture errors
+            pipe_output=\$({
                 while IFS=',' read -r n1 n2 || [ -n \"\$n1\" ]; do
                     [ -z \"\$n1\" ] && continue
                     n1=\$(echo \$n1 | tr -d '[:space:]')
@@ -305,10 +336,36 @@ store_graph_in_servers() {
                     echo \"SET node_\${n1}_color 0\"
                     echo \"SET node_\${n2}_color 0\"
                 done < graph/$dataset
-            } | ./KeyDB/src/keydb-cli -h localhost --pipe > /dev/null 2>&1
+            } | ./KeyDB/src/keydb-cli -h localhost --pipe 2>&1)
             
-            key_count=\$(./KeyDB/src/keydb-cli -h localhost DBSIZE 2>/dev/null | grep -o '[0-9]*')
-            echo \"Graph loaded on $destination: \$key_count keys\"
+            pipe_exit_code=\$?
+            
+            # Always show pipe output for debugging
+            echo \"Pipe output for $destination:\"
+            echo \"\$pipe_output\"
+            
+            if [ \$pipe_exit_code -ne 0 ]; then
+                echo \"ERROR: Graph loading failed on $destination with exit code \$pipe_exit_code\"
+                echo \"ERROR details: \$pipe_output\"
+                exit 1
+            fi
+            
+            # Check if pipe output indicates errors
+            if echo \"\$pipe_output\" | grep -qi \"error\|failed\|connection refused\"; then
+                echo \"ERROR: Graph loading reported errors on $destination\"
+                echo \"ERROR details: \$pipe_output\"
+                exit 1
+            fi
+            
+            # Get final key count
+            final_keys=\$(./KeyDB/src/keydb-cli -h localhost DBSIZE 2>/dev/null | grep -o '[0-9]*')
+            echo \"Graph loaded on $destination: \$final_keys keys (was \$initial_keys)\"
+            
+            # Verify keys were actually added
+            if [ \"\$final_keys\" -eq \"0\" ] || [ \"\$final_keys\" -le \"\$initial_keys\" ]; then
+                echo \"ERROR: No keys were added on $destination! Expected keys > \$initial_keys, got \$final_keys\"
+                exit 1
+            fi
         "
     done
 
@@ -434,12 +491,12 @@ delete_logs(){
         role_list=${value#*@}
         target_directory="fall_2025"
         echo "Deleting Logs on $key"
-
+        
 
         ssh $username@$destination "cd ~/fall_2025/KeyDB; rm $key.log"
 
 
-
+       
         if [ $? -eq 0 ]; then
             echo "Logs deleted on $destination."
         else
@@ -517,9 +574,44 @@ delete_database #delete old database
 delete_logs #delete old logs
 
 #copy_code_to_server_machines
+sync_graph_main_server
 copy_code_to_client_machines
 
 start_servers
-sleep 2
+
+# Wait for servers to be ready but load graph BEFORE full replication sync
+echo "Waiting for KeyDB servers to be ready..."
+generate_map
+for destination in "${!machine_server_map[@]}"; do
+    echo "Checking $destination..."
+    for i in {1..30}; do
+        if ssh -n "$username@$destination" "cd ~/fall_2025 && ./KeyDB/src/keydb-cli -h localhost PING > /dev/null 2>&1"; then
+            echo "$destination is ready"
+            break
+        fi
+        if [ $i -eq 30 ]; then
+            echo "WARNING: $destination did not become ready after 15 seconds"
+        fi
+        sleep 0.5
+    done
+done
+
+# Load graph IMMEDIATELY after servers are ready (before replication fully syncs)
+echo "Loading graph on all servers..."
 store_graph_in_servers
+
+# Now wait for replication to propagate the loaded graph
+echo "Waiting for replication to sync loaded graph..."
+sleep 10
+
+# Verify graph is present on all servers
+echo "Verifying graph data on all servers..."
+generate_map
+for destination in "${!machine_server_map[@]}"; do
+    key_count=$(ssh -n "$username@$destination" "cd ~/fall_2025 && ./KeyDB/src/keydb-cli -h localhost DBSIZE 2>/dev/null | grep -o '[0-9]*'")
+    echo "$destination has $key_count keys"
+    if [ "$key_count" -eq "0" ]; then
+        echo "WARNING: $destination has 0 keys after graph loading!"
+    fi
+done
 sleep 5
