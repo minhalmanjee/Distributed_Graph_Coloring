@@ -25,7 +25,7 @@ if [ ! -f "../graph/$dataset" ]; then
     exit 1
 fi
 
-clients=("lhotse101" "lhotse102" "nuptse1" "nuptse2" "nuptse3") #4 clients 
+clients=("lhotse101" "lhotse102" "nuptse1" "nuptse2" "nuptse3" "manaslu1" "manaslu2" "manaslu3" "manaslu4" "manaslu5" "manaslu6" "manaslu7" "manaslu8" "manaslu9" "manaslu10")
 
 # "manaslu7" "manaslu8" "manaslu9" "manaslu10" "manaslu11" "manaslu12" "lhotse3" "lhotse4" "nuptse1" "nuptse2" "nuptse3" "nuptse4" "nuptse5" "nuptse6")
           
@@ -35,7 +35,7 @@ clients=("lhotse101" "lhotse102" "nuptse1" "nuptse2" "nuptse3") #4 clients
             # "manaslu11" "manaslu12" "lhotse3")
 
 # servers=("yangra4" "yangra2" "yangra3")
-servers=("lhotse4" "lhotse3" "nuptse4")
+servers=("lhotse4" "lhotse3" "nuptse4" "manaslu11" "manaslu12")
 username="mmanjee"
 
 

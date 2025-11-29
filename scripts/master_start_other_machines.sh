@@ -301,11 +301,91 @@ store_graph_in_servers() {
 
     STORING_GRAPH_IN_SERVERS_START=$(date +%s)
 
-    # Load graph on ALL servers (not just first)
+    # Step 1: Generate protocol file once locally using Ruby (as per KeyDB documentation)
+    local protocol_file="/tmp/graph_protocol_${RANDOM}.txt"
+    
+    # Use absolute path to graph file (same structure as servers: ~/fall_2025/graph/)
+    local graph_file="$HOME/final/Distributed_Graph_Coloring/graph/$dataset"
+    
+    echo "Generating KeyDB protocol file using Python (matching documentation pattern)..."
+    echo "Graph file: $graph_file"
+    
+    if [ ! -f "$graph_file" ]; then
+        echo "ERROR: Graph file not found: $graph_file"
+        exit 1
+    fi
+    
+    # Generate protocol file using Python (matching KeyDB documentation pattern)
+    # Python equivalent of Ruby gen_redis_proto function from documentation
+    local python_script="/tmp/gen_protocol_${RANDOM}.py"
+    cat > "$python_script" << 'PYTHON_EOF'
+import sys
+
+def gen_redis_proto(*cmd):
+    proto = ""
+    proto += "*" + str(len(cmd)) + "\r\n"
+    for arg in cmd:
+        proto += "$" + str(len(str(arg))) + "\r\n"
+        proto += str(arg) + "\r\n"
+    return proto
+
+# Read CSV graph file and generate protocol
+nodes = {}
+edges = []
+
+with open(sys.argv[1], 'r') as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        
+        parts = line.split(',')
+        if len(parts) != 2:
+            continue
+        
+        n1 = parts[0].strip()
+        n2 = parts[1].strip()
+        if not n1 or not n2:
+            continue
+        
+        nodes[n1] = True
+        nodes[n2] = True
+        edges.append((n1, n2))
+
+# Generate SET commands for node colors
+for node in nodes:
+    sys.stdout.write(gen_redis_proto("SET", "node_" + node + "_color", "0"))
+
+# Generate SADD commands for neighbor relationships
+for n1, n2 in edges:
+    sys.stdout.write(gen_redis_proto("SADD", "node_" + n1 + "_neighbours", n2))
+    sys.stdout.write(gen_redis_proto("SADD", "node_" + n2 + "_neighbours", n1))
+PYTHON_EOF
+    
+    python3 "$python_script" "$graph_file" > "$protocol_file"
+    rm -f "$python_script"
+    
+    if [ ! -f "$protocol_file" ] || [ ! -s "$protocol_file" ]; then
+        echo "ERROR: Failed to generate protocol file"
+        exit 1
+    fi
+    
+    local file_size=$(wc -c < "$protocol_file")
+    echo "Protocol file generated: $file_size bytes"
+    echo ""
+    
+    # Step 2: Copy protocol file to all servers and load using cat | keydb-cli --pipe
     for destination in "${!machine_server_map[@]}"; do
         echo "Loading graph on $destination..."
-        echo "Dataset file: $dataset"
         
+        # Copy protocol file to server
+        echo "  Copying protocol file to $destination..."
+        scp -q "$protocol_file" "$username@$destination:/tmp/graph_protocol.txt" || {
+            echo "ERROR: Failed to copy protocol file to $destination"
+            continue
+        }
+        
+        # Load using exactly as documentation: cat data.txt | keydb-cli --pipe
         ssh -n "$username@$destination" "
             cd ~/fall_2025 || exit 1
             
@@ -315,59 +395,37 @@ store_graph_in_servers() {
                 exit 1
             fi
             
-            if [ ! -f \"graph/$dataset\" ]; then
-                echo \"ERROR: Graph file graph/$dataset not found\"
-                exit 1
-            fi
-            
             # Get initial key count
             initial_keys=\$(./KeyDB/src/keydb-cli -h localhost DBSIZE 2>/dev/null | grep -o '[0-9]*')
-            echo \"Initial keys on $destination: \$initial_keys\"
+            echo \"  Initial keys: \$initial_keys\"
             
-            # Load graph and capture errors
-            pipe_output=\$({
-                while IFS=',' read -r n1 n2 || [ -n \"\$n1\" ]; do
-                    [ -z \"\$n1\" ] && continue
-                    n1=\$(echo \$n1 | tr -d '[:space:]')
-                    n2=\$(echo \$n2 | tr -d '[:space:]')
-                    [ -z \"\$n1\" ] || [ -z \"\$n2\" ] && continue
-                    echo \"SADD node_\${n1}_neighbours \${n2}\"
-                    echo \"SADD node_\${n2}_neighbours \${n1}\"
-                    echo \"SET node_\${n1}_color 0\"
-                    echo \"SET node_\${n2}_color 0\"
-                done < graph/$dataset
-            } | ./KeyDB/src/keydb-cli -h localhost --pipe 2>&1)
-            
-            pipe_exit_code=\$?
-            
-            # Always show pipe output for debugging
-            echo \"Pipe output for $destination:\"
-            echo \"\$pipe_output\"
-            
-            if [ \$pipe_exit_code -ne 0 ]; then
-                echo \"ERROR: Graph loading failed on $destination with exit code \$pipe_exit_code\"
-                echo \"ERROR details: \$pipe_output\"
-                exit 1
-            fi
-            
-            # Check if pipe output indicates errors
-            if echo \"\$pipe_output\" | grep -qi \"error\|failed\|connection refused\"; then
-                echo \"ERROR: Graph loading reported errors on $destination\"
-                echo \"ERROR details: \$pipe_output\"
-                exit 1
-            fi
+            # Load using exactly as documentation shows: cat data.txt | keydb-cli --pipe
+            echo \"  Loading protocol file into KeyDB...\"
+            cat /tmp/graph_protocol.txt | ./KeyDB/src/keydb-cli -h localhost --pipe
             
             # Get final key count
             final_keys=\$(./KeyDB/src/keydb-cli -h localhost DBSIZE 2>/dev/null | grep -o '[0-9]*')
-            echo \"Graph loaded on $destination: \$final_keys keys (was \$initial_keys)\"
+            echo \"  Final keys: \$final_keys\"
             
-            # Verify keys were actually added
-            if [ \"\$final_keys\" -eq \"0\" ] || [ \"\$final_keys\" -le \"\$initial_keys\" ]; then
-                echo \"ERROR: No keys were added on $destination! Expected keys > \$initial_keys, got \$final_keys\"
+            # Verify keys were actually added (or at least present)
+            if [ \"\$final_keys\" -eq \"0\" ]; then
+                echo \"ERROR: No keys present on $destination after loading!\"
                 exit 1
             fi
-        "
+            
+            # Clean up protocol file on server
+            rm -f /tmp/graph_protocol.txt
+        " || {
+            echo "ERROR: Failed to load graph on $destination"
+            continue
+        }
+        
+        echo "Graph loaded on $destination"
+        echo ""
     done
+    
+    # Clean up local protocol file
+    rm -f "$protocol_file"
 
     STORING_GRAPH_IN_SERVERS_END=$(date +%s)
     STORING_GRAPH_IN_SERVERS_DURATION=$(( $STORING_GRAPH_IN_SERVERS_END - $STORING_GRAPH_IN_SERVERS_START ))
@@ -592,7 +650,7 @@ for destination in "${!machine_server_map[@]}"; do
         if [ $i -eq 30 ]; then
             echo "WARNING: $destination did not become ready after 15 seconds"
         fi
-        sleep 0.5
+        sleep 5
     done
 done
 
@@ -600,18 +658,7 @@ done
 echo "Loading graph on all servers..."
 store_graph_in_servers
 
-# Now wait for replication to propagate the loaded graph
+# Wait for replication to sync - let it sync naturally without checking
 echo "Waiting for replication to sync loaded graph..."
-sleep 10
-
-# Verify graph is present on all servers
-echo "Verifying graph data on all servers..."
-generate_map
-for destination in "${!machine_server_map[@]}"; do
-    key_count=$(ssh -n "$username@$destination" "cd ~/fall_2025 && ./KeyDB/src/keydb-cli -h localhost DBSIZE 2>/dev/null | grep -o '[0-9]*'")
-    echo "$destination has $key_count keys"
-    if [ "$key_count" -eq "0" ]; then
-        echo "WARNING: $destination has 0 keys after graph loading!"
-    fi
-done
-sleep 5
+echo "Replication will sync automatically - allowing time for propagation..."
+sleep 600

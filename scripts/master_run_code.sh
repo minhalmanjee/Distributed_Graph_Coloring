@@ -161,7 +161,8 @@ run_code_sync() {
     done
 
     # Execute the code on clients
-    for client in "${!machine_client_map[@]}"; do
+    # IMPORTANT: Iterate over clients array (guaranteed order) not machine_client_map keys (random order)
+    for client in "${clients[@]}"; do
         partition="${partitions[index]}"
         start=${partition%,*}  # Extract the first value (before comma)
         end=${partition#*,}    # Extract the second value (after comma)
@@ -175,7 +176,7 @@ run_code_sync() {
         echo "${machine_client_map[$client]}" 
         echo "cd /home/mmanjee/code/color/sync; nohup ./color.sh $start $end $ip > color_${start}_${end}.log 2>&1 & echo \$! > color_${start}_${end}.pid"
        
-        ssh "${machine_client_map[$client]}" "cd /home/mmanjee/code/color/sync; nohup ./color.sh $start $end $ip 0 > color_${start}_${end}.log 2>&1 & echo \$! > color_${start}_${end}.pid"
+        ssh "${machine_client_map[$client]}" "cd /home/mmanjee/code/color/sync; nohup ./color.sh $start $end $ip 3 > color_${start}_${end}.log 2>&1 & echo \$! > color_${start}_${end}.pid"
         # echo "cd /home/abhattar/code/color/1server; nohup ./color.sh $start $end $ip > color_${start}_${end}.log 2>&1 & echo \$! > color_${start}_${end}.pid"
         ((index++))  # Move to the next partition
         echo "$index"
@@ -362,21 +363,29 @@ log_server_throughput() {
                 echo "Experiment elapsed time: $EXPERIMENT_DURATION seconds"
             fi
             echo ""
-            echo "=== Command Statistics ==="
-            ssh -n "$server_ssh" "cd ~/fall_2025 && ./KeyDB/src/keydb-cli -h localhost INFO commandstats" 2>/dev/null || echo "ERROR: Failed to connect to KeyDB"
-            echo ""
             echo "=== Overall Stats ==="
-            ssh -n "$server_ssh" "cd ~/fall_2025 && ./KeyDB/src/keydb-cli -h localhost INFO stats | grep -E 'total_commands_processed|instantaneous_ops_per_sec|total_reads_processed|total_writes_processed|keyspace_hits|keyspace_misses|uptime_in_seconds'" 2>/dev/null || echo "ERROR: Failed to fetch stats"
-            echo ""
-            echo "=== Clients Connected ==="
-            ssh -n "$server_ssh" "cd ~/fall_2025 && ./KeyDB/src/keydb-cli -h localhost INFO clients | grep -E 'connected_clients|blocked_clients'" 2>/dev/null || echo "ERROR: Failed to fetch client info"
-            echo ""
-            echo "=== Client Connection Details ==="
-            echo "All connections:"
-            ssh -n "$server_ssh" "cd ~/fall_2025 && ./KeyDB/src/keydb-cli -h localhost CLIENT LIST" 2>/dev/null | head -20 || echo "ERROR: Failed to fetch client list"
-            echo ""
-            echo "Application clients only (excluding replication and localhost):"
-            ssh -n "$server_ssh" "cd ~/fall_2025 && ./KeyDB/src/keydb-cli -h localhost CLIENT LIST | grep -v 'flags=[MS]' | grep -v 'addr=127.0.0.1'" 2>/dev/null || echo "No application clients connected"
+            stats_output=$(ssh -n "$server_ssh" "cd ~/fall_2025 && ./KeyDB/src/keydb-cli -h localhost INFO stats | grep -E 'total_commands_processed|instantaneous_ops_per_sec|total_reads_processed|total_writes_processed|keyspace_hits|keyspace_misses|uptime_in_seconds'" 2>/dev/null)
+            echo "$stats_output"
+            
+            # Calculate average throughput using experiment duration
+            if [ -n "$EXPERIMENT_DURATION" ] && [ "$EXPERIMENT_DURATION" -gt 0 ]; then
+                total_commands=$(echo "$stats_output" | grep "total_commands_processed" | cut -d':' -f2 | tr -d '\r' | tr -d ' ')
+                total_reads=$(echo "$stats_output" | grep "total_reads_processed" | cut -d':' -f2 | tr -d '\r' | tr -d ' ')
+                total_writes=$(echo "$stats_output" | grep "total_writes_processed" | cut -d':' -f2 | tr -d '\r' | tr -d ' ')
+                
+                if [ -n "$total_commands" ] && [ "$total_commands" -gt 0 ]; then
+                    echo ""
+                    echo "=== Calculated Average Throughput (based on experiment duration) ==="
+                    avg_ops_per_sec=$(awk "BEGIN {printf \"%.2f\", $total_commands / $EXPERIMENT_DURATION}")
+                    avg_reads_per_sec=$(awk "BEGIN {printf \"%.2f\", $total_reads / $EXPERIMENT_DURATION}")
+                    avg_writes_per_sec=$(awk "BEGIN {printf \"%.2f\", $total_writes / $EXPERIMENT_DURATION}")
+                    
+                    echo "Experiment duration: $EXPERIMENT_DURATION seconds"
+                    echo "Average requests per second: $avg_ops_per_sec ops/sec"
+                    echo "Average reads per second: $avg_reads_per_sec ops/sec"
+                    echo "Average writes per second: $avg_writes_per_sec ops/sec"
+                fi
+            fi
         } > "$output_file"
         
         echo "        Server stats saved to: $output_file"
@@ -402,18 +411,62 @@ run_code_sync
 
 EXPECTED_CLIENTS=${#clients[@]}
 check_completion() {
+    # Re-parse clients if needed (in case function is called before array is set)
+    if [ "$EXPECTED_CLIENTS" -eq 0 ]; then
+        IFS=',' read -r -a clients_array <<< "$clients_string"
+        EXPECTED_CLIENTS=${#clients_array[@]}
+        echo "Re-calculated EXPECTED_CLIENTS: $EXPECTED_CLIENTS"
+    fi
 
+    local check_count=0
+    local monitor_server="yangra101"  # Clients set status on yangra101 (master/monitor machine)
+    
+    echo "Waiting for $EXPECTED_CLIENTS clients to complete (no timeout)..."
+    echo "Checking status on monitor server: $monitor_server"
+    
     while true; do
         local COMPLETED
-        COMPLETED=$($HOME/final/KeyDB/src/keydb-cli -h yangra101 KEYS "*_status" | wc -l)
-        echo "Clients completed: $COMPLETED / $EXPECTED_CLIENTS"
+        COMPLETED=$($HOME/final/KeyDB/src/keydb-cli -h "$monitor_server" KEYS "*_status" 2>/dev/null | wc -l)
+        echo "Clients completed: $COMPLETED / $EXPECTED_CLIENTS (check #$((check_count + 1)))"
+        
+        # Show which clients have completed
+        if [ "$COMPLETED" -gt 0 ]; then
+            echo "Completed clients:"
+            $HOME/final/KeyDB/src/keydb-cli -h "$monitor_server" KEYS "*_status" 2>/dev/null | sed 's/_status$//' | head -10
+        fi
+        
+        # Check if remaining clients are still running (every 5th check)
+        if [ $((check_count % 5)) -eq 0 ] && [ "$COMPLETED" -lt "$EXPECTED_CLIENTS" ]; then
+            echo "Checking if remaining clients are still running..."
+            local running_count=0
+            IFS=',' read -r -a clients_array <<< "$clients_string"
+            
+            # Get list of completed clients (those with status keys)
+            local completed_clients_list
+            completed_clients_list=$($HOME/final/KeyDB/src/keydb-cli -h "$monitor_server" KEYS "*_status" 2>/dev/null | sed 's/_status$//' || echo "")
+            
+            # Only check clients that haven't completed yet
+            for client in "${clients_array[@]}"; do
+                # Skip if this client has already completed
+                if echo "$completed_clients_list" | grep -q "^${client}$"; then
+                    continue
+                fi
+                
+                # Check if this incomplete client is still running
+                if ssh -n -o ConnectTimeout=2 "${username}@${client}.uwyo.edu" "pgrep -f 'color.sh' > /dev/null 2>&1" 2>/dev/null; then
+                    ((running_count++))
+                fi
+            done
+            echo "Clients still running: $running_count (out of $((EXPECTED_CLIENTS - COMPLETED)) remaining)"
+        fi
 
         if [[ "$COMPLETED" -eq "$EXPECTED_CLIENTS" ]]; then
             echo "All clients have completed coloring!"
             break
         fi
-
-        sleep 10 # Wait before checking again
+        
+        ((check_count++))
+        sleep 300 # Wait before checking again
     done
     #close_servers
     copy_client_logs
