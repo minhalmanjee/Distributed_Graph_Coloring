@@ -174,13 +174,13 @@ redisReply *write_with_wait(redisContext *c, char *required_replicas, char *time
 
     fprintf(stdout, "\n Command %s with key  %s and value %s \n", command_name, key, value);
     fflush(stdout);
-    
+      
     // Send the write command ONCE (don't retry SET)
-    reply = redisCommand(c, "%s %s %s", command_name, key, value);
-    if (!reply) {
-        fprintf(stderr, "Failed to execute command: %s\n", c->errstr);
-        return NULL;
-    }
+        reply = redisCommand(c, "%s %s %s", command_name, key, value);
+        if (!reply) {
+            fprintf(stderr, "Failed to execute command: %s\n", c->errstr);
+            return NULL;
+        }
     
     // Check if SET command succeeded
     if (reply->type == REDIS_REPLY_ERROR) {
@@ -208,11 +208,11 @@ redisReply *write_with_wait(redisContext *c, char *required_replicas, char *time
         // No max retry limit when acknowledged_replicas == 0 (keep retrying indefinitely)
         // Max retry limit of 3 when acknowledged_replicas > 0 but < required
         do {
-            // Wait for replicas using WAIT command
-            reply = redisCommand(c, "WAIT %s %s", required_replicas, timeout_ms);
-            
-            if (!reply) {
-                fprintf(stderr, "WAIT command failed: %s\n", c->errstr);
+        // Wait for replicas using WAIT command
+        reply = redisCommand(c, "WAIT %s %s", required_replicas, timeout_ms);
+        
+        if (!reply) {
+            fprintf(stderr, "WAIT command failed: %s\n", c->errstr);
                 // If WAIT fails but SET succeeded, we can still proceed
                 acknowledged_replicas = 0;
                 break;
@@ -224,15 +224,15 @@ redisReply *write_with_wait(redisContext *c, char *required_replicas, char *time
                 // If WAIT fails but SET succeeded, proceed anyway
                 acknowledged_replicas = 0;
                 break;
-            }
+        }
 
-            acknowledged_replicas = reply->integer;
+        acknowledged_replicas = reply->integer;
             fprintf(stdout, "\nRequired Replicas: %d, Acknowledged Replicas: %d", 
                     required, acknowledged_replicas);
             fflush(stdout);
-            
-            freeReplyObject(reply);
-            
+        
+        freeReplyObject(reply);
+
             // If we got enough acks, break
             if (acknowledged_replicas >= required) {
                 break;
@@ -256,7 +256,7 @@ redisReply *write_with_wait(redisContext *c, char *required_replicas, char *time
             // Small delay before retry
             usleep(100000); // 100ms delay
             
-        } while (acknowledged_replicas < required);
+    } while (acknowledged_replicas < required);
     }
     
     log_write_end();
@@ -282,13 +282,13 @@ void acquire_lock(redisContext *context, ClientGraphPetersonLock *lock,const cha
     redisReply *my_flag, *turn_var, *other_flag, *turn_var_new;
 
     // Set the first flag
-    my_flag = write_with_wait(context, num_of_replicas, timeout, "SET", lock->lock_key_1, "1");
+        my_flag = write_with_wait(context, num_of_replicas, timeout, "SET", lock->lock_key_1, "1");
     if (!my_flag) {
         fprintf(stderr, "ERROR: Failed to set lock_key_1: %s\n", lock->lock_key_1);
         return; // Exit if write failed
     }
     freeReplyObject(my_flag);
-    
+        
     // Set the turn variable
     turn_var = write_with_wait(context, num_of_replicas, timeout, "SET", lock->turn_key, lock->node_name);
     if (!turn_var) {
@@ -303,31 +303,31 @@ void acquire_lock(redisContext *context, ClientGraphPetersonLock *lock,const cha
         fprintf(stderr, "ERROR: Failed to GET lock_key_2: %s\n", lock->lock_key_2);
         return;
     }
-    log_read();
+        log_read();
     
-    turn_var_new = redisCommand(context, "GET %s", lock->turn_key);
+        turn_var_new = redisCommand(context, "GET %s", lock->turn_key);
     if (!turn_var_new) {
         fprintf(stderr, "ERROR: Failed to GET turn_key: %s\n", lock->turn_key);
         freeReplyObject(other_flag);
         return;
     }
-    log_read();
+        log_read();
 
     // FIX: Add NULL checks before accessing ->str
     while (other_flag != NULL && other_flag->type != REDIS_REPLY_NIL && other_flag->str != NULL &&
            turn_var_new != NULL && turn_var_new->type != REDIS_REPLY_NIL && turn_var_new->str != NULL &&
-           strcmp(other_flag->str, "1") == 0 &&
+                   strcmp(other_flag->str, "1") == 0 &&
            strcmp(turn_var_new->str, lock->node_name) == 0) {
 
         // Free old replies before getting new ones
         freeReplyObject(turn_var_new);
         freeReplyObject(other_flag);
-        
-        turn_var_new = redisCommand(context, "GET %s", lock->turn_key);
-        log_read();
+
+                turn_var_new = redisCommand(context, "GET %s", lock->turn_key);
+                log_read();
         other_flag = redisCommand(context, "GET %s", lock->lock_key_2);
-        log_read();
-        
+                log_read();
+
         // Check if new replies are NULL or errors
         if (!turn_var_new || !other_flag) {
             fprintf(stderr, "ERROR: GET commands failed in busy-wait loop\n");
@@ -338,7 +338,7 @@ void acquire_lock(redisContext *context, ClientGraphPetersonLock *lock,const cha
         if (other_flag->type == REDIS_REPLY_NIL || turn_var_new->type == REDIS_REPLY_NIL) {
             break;
         }
-    }
+                   }
 
     // Clean up
     if (other_flag) freeReplyObject(other_flag);
@@ -483,7 +483,7 @@ void set_node_color(redisContext *context, const char *node_name, int color, con
     // Convert the integer color to string
     char color_str[10];
     snprintf(color_str, sizeof(color_str), "%d", color);
-    
+
     char status[256];
     snprintf(status, sizeof(status), "%s_status", node_name);
 
@@ -671,25 +671,25 @@ void read_color_of_neighbors(redisContext *context,
                 snprintf(bothId, sizeof(bothId), "%s_%s", char_node, nbr_id);
             }
 
-            // Create and store the lock in the locks array
-            ClientGraphPetersonLock *lock = &locks_array[*num_locks]; // Reference the specific lock in the array
-            snprintf(lock->lock_key_1, sizeof(lock->lock_key_1), "flag_%s_%s", bothId, char_node);
-            snprintf(lock->lock_key_2, sizeof(lock->lock_key_2), "flag_%s_%s", bothId, nbr_id);
-            snprintf(lock->turn_key, sizeof(lock->turn_key), "turn_%s", bothId);
-            snprintf(lock->node_name, sizeof(lock->node_name), "%s", char_node);
-            
-            
-            printf("\nSetting Up Locks for %s and %s\n", char_node,nbr_id);    
-            printf("%s\n", lock->lock_key_1);
-            printf("%s\n", lock->lock_key_2);
-            printf("%s\n", lock->turn_key);
-            printf("%s\n", lock->node_name);
+        // Create and store the lock in the locks array
+        ClientGraphPetersonLock *lock = &locks_array[*num_locks]; // Reference the specific lock in the array
+        snprintf(lock->lock_key_1, sizeof(lock->lock_key_1), "flag_%s_%s", bothId, char_node);
+        snprintf(lock->lock_key_2, sizeof(lock->lock_key_2), "flag_%s_%s", bothId, nbr_id);
+        snprintf(lock->turn_key, sizeof(lock->turn_key), "turn_%s", bothId);
+        snprintf(lock->node_name, sizeof(lock->node_name), "%s", char_node);
+        
+        
+        printf("\nSetting Up Locks for %s and %s\n", char_node,nbr_id);    
+                printf("%s\n", lock->lock_key_1);
+                printf("%s\n", lock->lock_key_2);
+                printf("%s\n", lock->turn_key);
+                printf("%s\n", lock->node_name);
 
-            // Acquire the lock
-            acquire_lock(context, lock, log_file_path, num_of_replicas, timeout);
-            (*num_locks)++;     
-            // Increment the lock counter
-            // Update the counter each time a lock is acquired
+        // Acquire the lock
+        acquire_lock(context, lock, log_file_path, num_of_replicas, timeout);
+        (*num_locks)++;     
+        // Increment the lock counter
+         // Update the counter each time a lock is acquired
             
             // CRITICAL FIX: Re-read neighbor color AFTER acquiring lock
             // The neighbor might have colored itself while we were waiting for the lock
@@ -703,7 +703,7 @@ void read_color_of_neighbors(redisContext *context,
         if (char_node != NULL) {
             free(char_node);
         }
-    }
+}
 }
 
 void set_status(redisContext *context, const char *node_name ){
@@ -959,8 +959,8 @@ int main(int argc, char *argv[]) {
         // Only process nodes in this client's partition range
         if (node_id >= first_node_id_of_first_task && node_id <= last_node_id_of_last_task) {
             fprintf(stdout, "\nProcessing node %s (ID: %d)\n", keys[i], node_id);
-            process_node(context, keys[i], first_node_id_of_first_task, last_node_id_of_last_task,log_file_path,num_of_replicas, timeout);
-            total_processed_nodes++;  // Increment the counter
+        process_node(context, keys[i], first_node_id_of_first_task, last_node_id_of_last_task,log_file_path,num_of_replicas, timeout);
+        total_processed_nodes++;  // Increment the counter
         }
         
         free((void *)keys[i]); // Free the key string

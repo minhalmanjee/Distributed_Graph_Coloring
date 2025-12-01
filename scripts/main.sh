@@ -66,4 +66,4 @@ echo "================================================"
 bash master_run_experiment.sh $number_of_node $start_node $end_node $partition "$clients_string" "$servers_string" "$username" "$dataset"
 
 #Verification
-bash verify.sh $number_of_node $start_node $end_node $partition "$clients_string" "$servers_string" "$username"
+bash verify_c.sh $number_of_node $start_node $end_node $partition "$clients_string" "$servers_string" "$username"

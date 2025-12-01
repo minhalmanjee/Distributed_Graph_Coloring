@@ -457,7 +457,7 @@ check_completion() {
                     ((running_count++))
                 fi
             done
-            echo "Clients still running: $running_count (out of $((EXPECTED_CLIENTS - COMPLETED)) remaining)"
+            echo "Clients still running: $running_count"
         fi
 
         if [[ "$COMPLETED" -eq "$EXPECTED_CLIENTS" ]]; then

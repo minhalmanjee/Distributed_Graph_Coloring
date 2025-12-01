@@ -403,6 +403,14 @@ PYTHON_EOF
             echo \"  Loading protocol file into KeyDB...\"
             cat /tmp/graph_protocol.txt | ./KeyDB/src/keydb-cli -h localhost --pipe
             
+            # Check exit code
+            pipe_exit_code=\${PIPESTATUS[1]}
+            
+            if [ \$pipe_exit_code -ne 0 ]; then
+                echo \"ERROR: Graph loading failed on $destination with exit code \$pipe_exit_code\"
+                exit 1
+            fi
+            
             # Get final key count
             final_keys=\$(./KeyDB/src/keydb-cli -h localhost DBSIZE 2>/dev/null | grep -o '[0-9]*')
             echo \"  Final keys: \$final_keys\"
@@ -661,4 +669,4 @@ store_graph_in_servers
 # Wait for replication to sync - let it sync naturally without checking
 echo "Waiting for replication to sync loaded graph..."
 echo "Replication will sync automatically - allowing time for propagation..."
-sleep 600
+sleep 100
